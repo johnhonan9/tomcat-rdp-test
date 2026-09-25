@@ -1,1 +1,134 @@
 
+name: Windows Java Tomcat RDP Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-test:
+    runs-on: windows-2025
+    timeout-minutes: 330
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show runner specifications
+        shell: powershell
+        run: |
+          Write-Host "=== CPU ==="
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+
+          Write-Host "=== MEMORY ==="
+          Get-CimInstance Win32_ComputerSystem |
+            Select-Object @{
+              Name="RAM_GB"
+              Expression={[math]::Round($_.TotalPhysicalMemory / 1GB, 2)}
+            }
+
+          Write-Host "=== DISK ==="
+          Get-PSDrive C
+
+      - name: Install Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Verify Java
+        shell: powershell
+        run: |
+          java -version
+
+      - name: Connect runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          hostname: github-java-${{ github.run_id }}
+
+      - name: Configure secure RDP
+        shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          # Enable Remote Desktop
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          # KEEP Network Level Authentication enabled
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1
+
+          # Create RDP testing account
+          $securePassword = ConvertTo-SecureString `
+            $env:RDP_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          if (-not (Get-LocalUser -Name "rdptest" -ErrorAction SilentlyContinue)) {
+            New-LocalUser `
+              -Name "rdptest" `
+              -Password $securePassword `
+              -AccountNeverExpires
+          }
+          else {
+            Set-LocalUser `
+              -Name "rdptest" `
+              -Password $securePassword
+          }
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member "rdptest" `
+            -ErrorAction SilentlyContinue
+
+          # Allow RDP only from Tailscale address space
+          Get-NetFirewallRule `
+            -DisplayName "RDP via Tailscale" `
+            -ErrorAction SilentlyContinue |
+            Remove-NetFirewallRule
+
+          New-NetFirewallRule `
+            -DisplayName "RDP via Tailscale" `
+            -Direction Inbound `
+            -Protocol TCP `
+            -LocalPort 3389 `
+            -RemoteAddress 100.64.0.0/10 `
+            -Action Allow
+
+          Restart-Service TermService -Force
+
+      - name: Display connection information
+        shell: powershell
+        run: |
+          $tsIP = tailscale ip -4
+
+          Write-Host ""
+          Write-Host "====================================="
+          Write-Host " RDP READY"
+          Write-Host "====================================="
+          Write-Host "Address : $tsIP"
+          Write-Host "Username: rdptest"
+          Write-Host "Password: use your RDP_PASSWORD secret"
+          Write-Host "====================================="
+          Write-Host ""
+
+          Test-NetConnection `
+            -ComputerName $tsIP `
+            -Port 3389
+
+      - name: Keep test environment running
+        shell: powershell
+        run: |
+          Write-Host "Temporary Windows test environment running."
+          Write-Host "Cancel this workflow when testing is complete."
+
+          while ($true) {
+            Write-Host "[$(Get-Date)] Test environment active"
+            Start-Sleep -Seconds 300
+          }
