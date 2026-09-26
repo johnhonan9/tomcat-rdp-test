@@ -87,6 +87,11 @@ jobs:
             -Member "rdptest" `
             -ErrorAction SilentlyContinue
 
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member "rdptest" `
+            -ErrorAction SilentlyContinue
+
           # Allow RDP only from Tailscale address space
           Get-NetFirewallRule `
             -DisplayName "RDP via Tailscale" `
